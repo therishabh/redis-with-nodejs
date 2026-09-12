@@ -1,0 +1,123 @@
+# =============================================================================
+# Docker Compose file
+# =============================================================================
+# Ye file batati hai ki humein kaun se containers chahiye (Redis + MongoDB),
+# unhe kaise configure karna hai, aur wo ek dusre se / hamare system se
+# kaise connect honge.
+#
+# ISE RUN KAISE KAREIN:
+#   1. Docker Desktop app open/running honi chahiye (whale icon menu bar me).
+#   2. Terminal me is file wale folder me jao (cd karke).
+#   3. Ye command chalao:
+#        docker compose up -d
+#      "-d" ka matlab hai "detached" mode -> containers background me chalenge,
+#      terminal free rahega.
+#   4. Containers band (stop + remove) karne ke liye:
+#        docker compose down
+#   5. Sirf status dekhne ke liye:
+#        docker compose ps
+#   6. Kisi container ke logs dekhne ke liye:
+#        docker compose logs redis
+#        docker compose logs mongo
+# =============================================================================
+
+# "name" -> Is poore project ka naam. Docker Desktop me containers ek group
+# (folder) ke andar isi naam se dikhte hain. Agar ye na do, to default me
+# folder ka naam use hoga project name ke liye.
+name: chai-aur-redis-setup
+
+# "services" ke andar hum wo saare containers define karte hain jo humein
+# chalane hain. Har service ek alag container banayegi.
+services:
+
+  # -------------------------------------------------------------------------
+  # REDIS SERVICE
+  # Redis ek in-memory key-value database hai, jo caching aur fast data
+  # access ke liye use hoti hai.
+  # -------------------------------------------------------------------------
+  redis:
+    # "image" -> Docker Hub se kaunsi pehle se bani hui (pre-built) image
+    # use karni hai. "redis:7.0.11" ka matlab hai Redis version 7.0.11.
+    # Version fix (pin) karna isliye zaroori hai taaki har baar same
+    # version chale, warna future me "redis:latest" alag behavior de sakta hai.
+    image: redis:7.0.11
+
+    # "container_name" -> Container ko ek fixed, readable naam dete hain
+    # (warna Docker khud hi random naam de deta hai, jaise "eager_curie").
+    # Isse `docker ps` ya Docker Desktop me pehchanna easy ho jata hai.
+    container_name: chai-and-redis
+
+    # "ports" -> Format hai "HOST_PORT:CONTAINER_PORT".
+    # Container ke andar Redis 6379 par chalta hai. Hum apne laptop
+    # (host machine) ke 6379 port ko container ke 6379 port se map kar rahe
+    # hain, taaki hum apne app (localhost:6379) se Redis ko access kar sakein.
+    ports:
+      - "6379:6379"
+
+    # "command" -> Container start hote hi ye command chalti hai. Yahan hum
+    # Redis ke default startup command ko override karke extra flags de
+    # rahe hain:
+    #   redis-server        -> Redis ka server process start karta hai
+    #   --appendonly yes    -> AOF (Append Only File) persistence enable
+    #                          karta hai, matlab Redis har write operation ko
+    #                          disk par bhi likhega. Isse agar container
+    #                          restart/crash ho jaye, to data khoya nahi
+    #                          (by default Redis sab kuch sirf RAM me rakhta
+    #                          hai, jo container band hote hi udd jata hai).
+    command: [
+      "redis-server",
+      "--appendonly", "yes",
+    ]
+
+    # "volumes" -> Container ke andar ke data ko host machine (ya Docker ke
+    # managed storage) me persist (save) karte hain.
+    # Format: "VOLUME_NAME:PATH_INSIDE_CONTAINER"
+    # "/data" wo path hai jahan Redis apni AOF/RDB files save karta hai.
+    # Agar ye na ho, to container delete hote hi saara data bhi delete ho
+    # jayega.
+    volumes:
+      - redis-data:/data
+
+  # -------------------------------------------------------------------------
+  # MONGO SERVICE
+  # MongoDB ek NoSQL document database hai, jisme hum apna actual app data
+  # (jaise users, records, etc.) store karenge.
+  # -------------------------------------------------------------------------
+  mongo:
+    # MongoDB version 7.0.5 ki official image use ho rahi hai.
+    image: mongo:7.0.5
+
+    # Container ka fixed readable naam.
+    container_name: chai-and-mongo
+
+    # MongoDB by default container ke andar 27017 port par chalta hai.
+    # Hum usi port ko apne host machine ke 27017 se map kar rahe hain,
+    # taaki apna app "mongodb://localhost:27017" se connect kar sake.
+    ports:
+      - "27017:27017"
+
+    # "environment" -> Container ke andar environment variables set karte
+    # hain. Ye variables container ke andar chal rahe process (yahan
+    # MongoDB) ko milte hain aur uska behavior/config change kar sakte hain.
+    environment:
+      # Note: Ye custom variable hai (MongoDB isko khud se read nahi karta),
+      # sirf reference/documentation ke liye rakha hai ki hum kaunsa
+      # database naam use karne wale hain apne app me.
+      MONGO_INIT_DB: chai_aur_redis
+
+    # MongoDB apna data "/data/db" path par store karta hai container ke
+    # andar. Isko volume me map karke persist kar rahe hain, taaki container
+    # delete/restart hone par bhi database ka data safe rahe.
+    volumes:
+      - mongo-data:/data/db
+
+# "volumes" (top-level) -> Yahan hum un named volumes ko declare karte hain
+# jo upar services me use kiye gaye the. Docker in volumes ko khud manage
+# karta hai (disk par ek safe jagah par store karta hai), aur ye tab tak
+# rehte hain jab tak inhe manually delete na kiya jaye
+# (`docker volume rm ...` ya `docker compose down -v`).
+# Isi wajah se container ko delete/restart karne par bhi Redis aur MongoDB
+# ka data khota nahi hai.
+volumes:
+  redis-data:
+  mongo-data:
