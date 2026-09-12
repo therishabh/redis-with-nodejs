@@ -92,8 +92,8 @@ server ko khud restart kar deta hai (development ke liye kaam aata hai).
 | POST   | `/banner`        | Naya banner set/update karta hai. Body me `{ "message": "...", "color": "..." }` chahiye. |
 | DELETE | `/banner`        | Banner ko Redis se delete kar deta hai. |
 | GET    | `/banner/exists` | Sirf ye batata hai ki banner set hai ya nahi (`{ "exists": true/false }`), actual data fetch kiye bina. |
-| POST   | `/otp`           | Diye gaye phone number ke liye naya OTP generate karta hai aur Redis me `60 second` ki expiry ke saath store karta hai. Body: `{ "phone": "..." }`. |
-| POST   | `/otp/verify`    | User ka diya hua OTP, Redis me stored value se match karke verify karta hai. Sahi hone par OTP turant delete ho jata hai (ek baar hi use ho sakta hai). Body: `{ "phone": "...", "otp": "..." }`. |
+| POST   | `/otp`           | Diye gaye phone number ke liye naya OTP generate karta hai aur Redis me `60 second` ki expiry ke saath store karta hai. Body: `{ "phone": "..." }`. Agar us phone ke liye pehle se OTP active hai, `429` (cooldown) return hota hai. |
+| POST   | `/otp/verify`    | User ka diya hua OTP, Redis me stored value se match karke verify karta hai. Sahi hone par OTP turant delete ho jata hai (ek baar hi use ho sakta hai). Galat hone par attempts count hota hai; `5` galat attempts ke baad OTP invalidate ho jata hai (`429`). Body: `{ "phone": "...", "otp": "..." }`. |
 | GET    | `/otp/:phone/ttl`| Diye gaye phone number ke current OTP ka TTL (baaki bacha hua time, seconds me) batata hai. |
 
 ### Banner test karne ke liye (example commands)
@@ -134,6 +134,19 @@ curl http://localhost:8000/otp/9876543210/ttl
 > Note: Abhi real SMS gateway (Twilio/MSG91 jaisa) integrate nahi kiya hai —
 > OTP sirf server ke console log me print hota hai, taaki learning/testing
 > aasan rahe.
+
+**OTP system me ye production safeguards bhi hain:**
+
+- **Resend cooldown** — Jab tak ek phone ka OTP active hai (60 sec ke andar),
+  `POST /otp` dobara call karne par `429` milega, naya OTP generate nahi
+  hoga. Isse SMS spam/cost abuse rukta hai.
+- **Max verify attempts** — Ek OTP par sirf `5` galat guesses allow hain,
+  usse zyada hone par wo OTP turant invalidate ho jata hai (brute-force se
+  bachne ke liye — 6-digit OTP sirf 10 lakh combinations ka hota hai).
+- **Phone normalization** — `"+91 98765-43210"`, `"919876543210"`, aur
+  `"9876543210"` teeno ko internally same canonical 10-digit number me
+  convert kiya jata hai, taaki formatting difference ki wajah se OTP kabhi
+  match hone se na chuke.
 
 ## Environment Variables (optional)
 
@@ -239,4 +252,28 @@ waqt follow/fix kiye gaye, taaki baad me revise karte waqt yaad rahe.
     - Poori file (`otp.js`) aur `index.js` me mounting wale hisse me
       detailed Hinglish comments add kiye — same standard jo banner file
       me use kiya tha (`@route` / `@desc` / `@body` / `@access`).
+
+12. **OTP system me production-grade safeguards add kiye (`setup/otp.js`)**
+    — as a backend developer jaanna zaroori hai ki basic "generate + store
+    + match" flow production ke liye kaafi nahi hota:
+    - **Resend cooldown** — `redis.set(key, otp, 'EX', 60, 'NX')` use kiya.
+      `NX` flag ka matlab hai "sirf tab set karo jab key exist na kare" —
+      isse agar phone ka OTP already active hai to naya request `429`
+      status ke saath reject ho jata hai, aur ye check + set ek hi atomic
+      Redis operation me hota hai (isliye do parallel requests aane par
+      race condition nahi hogi).
+    - **Max verify attempts** — Har phone ke galat verify attempts `otp:
+      attempts:<phone>` key me `redis.incr()` se count kiye jate hain (usi
+      OTP jitni expiry ke saath). `5` galat attempts ke baad OTP aur
+      attempts dono key delete kar dete hain — attacker ko unlimited
+      guesses nahi milte (brute-force protection).
+    - **Phone normalization** — `normalizePhone()` function saare
+      non-digit characters (`+`, spaces, `-`) hata ke sirf aakhri 10 digits
+      rakhta hai. Isse `+91 98765-43210` aur `9876543210` dono same Redis
+      key (`otp:9876543210`) use karte hain — warna formatting farak ki
+      wajah se OTP kabhi match hi nahi hota.
+    - In teeno ke against manual testing ki: resend turant dobara call
+      karne par cooldown message aaya, 5 galat OTP submit karne par lockout
+      hua, aur `+91` prefix wale number se bheja OTP plain 10-digit number
+      se hi verify ho gaya.
 # redis-with-nodejs
