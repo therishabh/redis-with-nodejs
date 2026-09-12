@@ -13,7 +13,8 @@ Ye ek learning project hai jisme hum seekh rahe hain ki **Redis** aur
 ├── readme.md            # Ye file
 └── setup/
     ├── index.js         # Express server ka entry point
-    └── site-banner.js   # "/banner" routes ka logic (Express Router)
+    ├── site-banner.js   # "/banner" routes ka logic (Express Router)
+    └── otp.js           # "/otp" routes ka logic (Express Router)
 ```
 
 ## Requirements
@@ -91,6 +92,9 @@ server ko khud restart kar deta hai (development ke liye kaam aata hai).
 | POST   | `/banner`        | Naya banner set/update karta hai. Body me `{ "message": "...", "color": "..." }` chahiye. |
 | DELETE | `/banner`        | Banner ko Redis se delete kar deta hai. |
 | GET    | `/banner/exists` | Sirf ye batata hai ki banner set hai ya nahi (`{ "exists": true/false }`), actual data fetch kiye bina. |
+| POST   | `/otp`           | Diye gaye phone number ke liye naya OTP generate karta hai aur Redis me `60 second` ki expiry ke saath store karta hai. Body: `{ "phone": "..." }`. |
+| POST   | `/otp/verify`    | User ka diya hua OTP, Redis me stored value se match karke verify karta hai. Sahi hone par OTP turant delete ho jata hai (ek baar hi use ho sakta hai). Body: `{ "phone": "...", "otp": "..." }`. |
+| GET    | `/otp/:phone/ttl`| Diye gaye phone number ke current OTP ka TTL (baaki bacha hua time, seconds me) batata hai. |
 
 ### Banner test karne ke liye (example commands)
 
@@ -109,6 +113,27 @@ curl http://localhost:8000/banner/exists
 # Banner delete karo
 curl -X DELETE http://localhost:8000/banner
 ```
+
+### OTP test karne ke liye (example commands)
+
+```bash
+# OTP generate/send karo (server console me OTP print hoga, demo ke liye)
+curl -X POST http://localhost:8000/otp \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"9876543210"}'
+
+# OTP verify karo (console me print hui value yahan daalo)
+curl -X POST http://localhost:8000/otp/verify \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"9876543210","otp":"123456"}'
+
+# OTP ka baaki bacha hua time (seconds) check karo
+curl http://localhost:8000/otp/9876543210/ttl
+```
+
+> Note: Abhi real SMS gateway (Twilio/MSG91 jaisa) integrate nahi kiya hai —
+> OTP sirf server ke console log me print hota hai, taaki learning/testing
+> aasan rahe.
 
 ## Environment Variables (optional)
 
@@ -196,4 +221,22 @@ waqt follow/fix kiye gaye, taaki baad me revise karte waqt yaad rahe.
     chal jaye. `app.use(siteBannerRouter(redis))` ke upar bhi comment me
     likha ki is function se konse-konse route paths mount ho rahe hain
     (`GET /banner`, `POST /banner`, `DELETE /banner`, `GET /banner/exists`).
+
+11. **OTP verification feature add ki (`setup/otp.js`)** — Banner jaisa hi
+    Express Router pattern use karke, 3 naye routes banaye:
+    - `POST /otp` — phone number ke liye ek random 6-digit OTP generate
+      karta hai aur Redis me `SET key value EX 60` se **60 second ki
+      expiry** ke saath store karta hai (Redis khud hi expire hote hi
+      delete kar deta hai, manual cleanup ki zaroorat nahi).
+    - `POST /otp/verify` — Redis se stored OTP nikaal ke user ke diye hue
+      OTP se match karta hai. Match hone par OTP ko turant `redis.del()`
+      se delete kar dete hain, taaki wahi OTP dobara (replay attack ki
+      tarah) reuse na ho sake — ek OTP sirf ek hi baar valid hota hai.
+    - `GET /otp/:phone/ttl` — `redis.ttl()` command se batata hai ki us
+      phone ke OTP ka abhi kitna time bacha hai (seconds me); agar OTP
+      exist hi nahi karta (kabhi bheja hi nahi gaya, ya expire ho chuka),
+      to `404` return hota hai.
+    - Poori file (`otp.js`) aur `index.js` me mounting wale hisse me
+      detailed Hinglish comments add kiye — same standard jo banner file
+      me use kiya tha (`@route` / `@desc` / `@body` / `@access`).
 # redis-with-nodejs

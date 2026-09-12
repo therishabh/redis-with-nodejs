@@ -15,6 +15,7 @@ import express from 'express';
 import Redis from 'ioredis';
 import mongoose from 'mongoose';
 import siteBannerRouter from './site-banner.js';
+import otpRouter from './otp.js';
 
 // Server kis port par chalega. Agar ".env" ya system me PORT set hai to wahi
 // use hoga, warna default 8000.
@@ -99,6 +100,24 @@ app.get('/mongo', async (req, res) => {
 // (In sab routes ka actual implementation "site-banner.js" me hai.)
 // ---------------------------------------------------------------------------
 app.use(siteBannerRouter(redis));
+
+// ---------------------------------------------------------------------------
+// OTP Verification API's
+// Phone number verify karne wale saare routes ek alag file "otp.js" me
+// rakhe gaye hain (Site Banner ki tarah hi Express Router pattern).
+//
+// otpRouter(redis) -> Yahan bhi wahi shared Redis connection pass kar rahe
+// hain, taaki OTP data bhi usi ek connection ke through store/read ho
+// (Redis me OTP short expiry ke saath rakha jata hai, taaki wo apne aap
+// expire ho jaye aur hume manually cleanup na karna pade).
+// Is function se ye routes mount hote hain:
+//   POST /otp             -> phone do, naya OTP generate + "send" ho jayega
+//                             (Redis me 60 second expiry ke saath store hota hai)
+//   POST /otp/verify       -> phone + otp do, verify hoga sahi hai ya nahi
+//   GET  /otp/:phone/ttl   -> is phone ke OTP ka baaki bacha hua time (seconds)
+// (In sab routes ka actual implementation "otp.js" me hai.)
+// ---------------------------------------------------------------------------
+app.use(otpRouter(redis));
 
 // Server ko actually start karte hain, given port par sunna (listen) shuru
 // kar deta hai. Callback function tabhi chalta hai jab server successfully
