@@ -135,18 +135,144 @@ curl http://localhost:8000/otp/9876543210/ttl
 > OTP sirf server ke console log me print hota hai, taaki learning/testing
 > aasan rahe.
 
-**OTP system me ye production safeguards bhi hain:**
+## OTP Verification System — Deep Dive
 
-- **Resend cooldown** — Jab tak ek phone ka OTP active hai (60 sec ke andar),
-  `POST /otp` dobara call karne par `429` milega, naya OTP generate nahi
-  hoga. Isse SMS spam/cost abuse rukta hai.
-- **Max verify attempts** — Ek OTP par sirf `5` galat guesses allow hain,
-  usse zyada hone par wo OTP turant invalidate ho jata hai (brute-force se
-  bachne ke liye — 6-digit OTP sirf 10 lakh combinations ka hota hai).
-- **Phone normalization** — `"+91 98765-43210"`, `"919876543210"`, aur
-  `"9876543210"` teeno ko internally same canonical 10-digit number me
-  convert kiya jata hai, taaki formatting difference ki wajah se OTP kabhi
-  match hone se na chuke.
+Ye section poori tarah samjhata hai ki `setup/otp.js` ke andar OTP system
+kaise kaam karta hai, taaki iski internal working clear rahe — sirf
+routes ka table hi nahi.
+
+### High-level flow
+
+```
+Client                     Server (otp.js)                    Redis
+  |                              |                               |
+  |--- POST /otp {phone} ------->|                               |
+  |                              |-- normalizePhone(phone) ----->|
+  |                              |-- generateOtp() -------------->|
+  |                              |-- SET otp:<phone> otp EX 60 NX-|
+  |                              |                    (atomic)    |
+  |                              |<--- OK / null (cooldown) ------|
+  |<---- success / 429 ----------|                               |
+  |                              |                               |
+  |--- POST /otp/verify -------->|                               |
+  |    {phone, otp}              |-- GET otp:<phone> ------------>|
+  |                              |<--- storedOtp / null ----------|
+  |                    match? -- yes -> DEL otp key + attempts key
+  |                              |     no  -> INCR attempts key,
+  |                              |            5th galat par DEL
+  |<---- success / 400 / 429 ----|                               |
+  |                              |                               |
+  |--- GET /otp/:phone/ttl ----->|                               |
+  |                              |-- TTL otp:<phone> ------------>|
+  |<---- { phone, ttl } ---------|<--- seconds remaining ---------|
+```
+
+### Redis me kya-kya store hota hai
+
+| Redis Key                 | Value        | Expiry (TTL)         | Kaam |
+|----------------------------|--------------|----------------------|------|
+| `otp:<phone>`               | 6-digit OTP  | `60` seconds         | Actual OTP value, jo verify ke waqt match hoti hai. |
+| `otp:attempts:<phone>`      | Number (count)| `60` seconds (OTP jaisi hi) | Kitni baar galat OTP diya gaya, uska counter. |
+
+`<phone>` hamesha normalized 10-digit form me hota hai (neeche dekho), chahe
+user ne kisi bhi format me number diya ho.
+
+### 1. Resend Cooldown (`SET ... EX 60 NX`)
+
+```js
+const result = await redis.set(key, otp, 'EX', OTP_EXPIRY_SECONDS, 'NX');
+```
+
+- `EX 60` -> is key ko 60 second baad apne aap expire (delete) kar do.
+- `NX` (**N**ot e**X**ists) -> value **sirf tabhi set karo jab key pehle se
+  exist na karti ho**.
+- Agar phone ka OTP already active hai (abhi expire nahi hua), Redis
+  `null` return karta hai — matlab kuch set nahi hua. Server isko dekh ke
+  `429 Too Many Requests` bhejta hai, saath me `retryAfterSeconds` (kitni
+  der baad phir try kare).
+- **Kyu zaroori hai:** Bina cooldown ke koi bhi `/otp` endpoint ko loop me
+  call karke unlimited SMS trigger karwa sakta hai (cost abuse / spam).
+- **Kyu atomic hona zaroori hai:** Agar hum pehle `GET` karke check karte
+  "OTP hai ya nahi", fir alag se `SET` karte, to do requests **same
+  milisecond** par aayein to dono ko lag sakta hai "OTP nahi hai" aur dono
+  apna-apna OTP set kar dein (race condition). `SET ... NX` ye poora kaam
+  Redis ke andar ek hi atomic step me karta hai, isliye race condition
+  possible hi nahi hai.
+
+### 2. Max Verify Attempts (Brute-force protection)
+
+```js
+const attempts = await redis.incr(attemptsKey);
+if (attempts === 1) await redis.expire(attemptsKey, OTP_EXPIRY_SECONDS);
+if (attempts >= MAX_VERIFY_ATTEMPTS) { /* OTP invalidate kar do */ }
+```
+
+- Har galat OTP submit hone par `otp:attempts:<phone>` counter `+1` hota
+  hai (`redis.incr()` — agar key exist nahi karti to Redis use 0 maan ke
+  seedha 1 bana deta hai).
+- Counter ki expiry OTP jitni hi rakhi hai, taaki OTP expire hote hi
+  attempts count bhi apne aap saaf ho jaye — alag se cleanup nahi karna
+  padta.
+- `5` galat attempts ke baad OTP **aur** attempts dono keys delete kar dete
+  hain, aur `429` return karte hain — user ko ab naya OTP mangwana padega.
+- **Kyu zaroori hai:** 6-digit OTP ke sirf `1,000,000` possible combinations
+  hote hain. Bina limit ke, koi bhi script kuch second me saare
+  combinations try karke OTP guess kar sakti hai. Attempts limit isko
+  practically impossible bana deti hai.
+
+### 3. Phone Normalization
+
+```js
+function normalizePhone(phone) {
+    const digitsOnly = String(phone).replace(/\D/g, '');
+    if (digitsOnly.length < 10) return null;
+    return digitsOnly.slice(-10);
+}
+```
+
+- Saare non-digit characters (`+`, space, `-`, brackets) hata dete hain.
+- Sirf **aakhri 10 digits** rakhte hain — isse country code (`91`, `+91`)
+  apne aap chhoot jata hai.
+- 10 digits se kam bachne par `null` return hota hai -> route isko invalid
+  phone maan ke `400` de deta hai.
+- **Kyu zaroori hai:** Agar normalization na ho, to `"+919876543210"` aur
+  `"9876543210"` do **alag** Redis keys (`otp:+919876543210` vs
+  `otp:9876543210`) ban jaayengi. User ne OTP request karte waqt ek format
+  diya aur verify karte waqt doosra — to OTP kabhi match hi nahi hoga,
+  bawajood iske ki value sahi thi.
+
+### Example responses
+
+```jsonc
+// POST /otp -> pehli baar, success
+{ "success": true, "message": "OTP sent successfully. It will expire in 60 seconds." }
+
+// POST /otp -> turant dobara call kiya (cooldown active)
+{ "error": "An OTP was already sent recently. Please wait before requesting a new one.", "retryAfterSeconds": 47 }
+
+// POST /otp/verify -> galat OTP (abhi attempts bache hain)
+{ "error": "Invalid OTP", "attemptsRemaining": 3 }
+
+// POST /otp/verify -> 5 galat attempts ho chuke
+{ "error": "Too many incorrect attempts. Please request a new OTP." }
+
+// GET /otp/:phone/ttl -> koi OTP active nahi hai
+{ "error": "No active OTP found for this phone number" }
+```
+
+### Isse aage kya aur improve kiya ja sakta hai (production ke liye)
+
+Ye learning project hai, isliye kuch cheezein jaan-boojh kar simple
+rakhi gayi hain. Ek real production system me ye bhi karna chahiye:
+
+- OTP ko Redis me plain text ke bajaye **hash** karke store karna (jaise
+  password store karte hain), taaki Redis compromise hone par bhi raw OTP
+  na dikhe.
+- Console `console.log` ke bajaye actual SMS gateway (Twilio/MSG91) se OTP
+  bhejna, aur production me OTP ki value kabhi bhi logs me print na karna.
+- Per-IP rate limiting (jaise `express-rate-limit`), sirf per-phone
+  cooldown ke alawa — taaki ek IP se hazaron alag phone numbers par bhi
+  spam na ho sake.
 
 ## Environment Variables (optional)
 
