@@ -17,6 +17,7 @@ import mongoose from 'mongoose';
 import siteBannerRouter from './site-banner.js';
 import otpRouter from './otp.js';
 import { jsonHashRouter } from './json-hash.js';
+import { emailQueueRouter } from './email-queue.js';
 
 // Server kis port par chalega. Agar ".env" ya system me PORT set hai to wahi
 // use hoga, warna default 8000.
@@ -135,6 +136,24 @@ app.use(otpRouter(redis));
 //   GET  /user/:id/hash/field/:field -> Hash ka sirf ek field lao
 // ---------------------------------------------------------------------------
 app.use(jsonHashRouter(redis));
+
+// ---------------------------------------------------------------------------
+// Email Queue API's
+// "email-queue.js" me Redis ki List data structure ko ek simple background
+// job queue ki tarah use kiya gaya hai — email turant nahi bheja jata,
+// balki queue me daal diya jata hai, aur baad me ek worker use process kar
+// sakta hai. Detailed explanation (FIFO order kaise banta hai) us file ke
+// top comment me hai.
+//
+// "/email-queue" prefix ke saath mount kiya hai, isliye actual URLs
+// "/email-queue/email/..." bante hain. Is function se ye routes mount
+// hote hain:
+//   POST /email-queue/email/send        -> naya email queue me daalo
+//   GET  /email-queue/email/queue       -> saare queued emails dekho
+//   GET  /email-queue/email/queue/count -> pending emails ka count
+//   GET  /email-queue/email/queue/next  -> agla email nikaalo (FIFO)
+// ---------------------------------------------------------------------------
+app.use('/email-queue', emailQueueRouter(redis));
 
 // Server ko actually start karte hain, given port par sunna (listen) shuru
 // kar deta hai. Callback function tabhi chalta hai jab server successfully

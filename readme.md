@@ -15,7 +15,8 @@ Ye ek learning project hai jisme hum seekh rahe hain ki **Redis** aur
     ├── index.js         # Express server ka entry point
     ├── site-banner.js   # "/banner" routes ka logic (Express Router)
     ├── otp.js           # "/otp" routes ka logic (Express Router)
-    └── json-hash.js     # "/user/:id/json" aur "/user/:id/hash" routes (Express Router)
+    ├── json-hash.js     # "/user/:id/json" aur "/user/:id/hash" routes (Express Router)
+    └── email-queue.js   # "/email-queue/email/*" routes ka logic (Express Router)
 ```
 
 ## Redis Commands Reference
@@ -47,6 +48,10 @@ rahe hain, unka kaam, aur ye project me kis liye use ho rahe hain.
 | `HSET key field value ...` | `redis.hset(key, object)` | Redis ke native **Hash** data structure me ek key ke andar multiple field-value pairs store karta hai (jaise ek mini object). ioredis me seedha ek JS object pass kar sakte ho, wo apne aap fields bana deta hai. | `json-hash.js` me user data ko Hash ki tarah store karne ke liye — JSON string ka alternative. |
 | `HGETALL key` | `redis.hgetall(key)` | Hash ke saare fields+values ek object ki tarah return karta hai. Key na milne par `null` nahi, **empty object** `{}` deta hai. | `json-hash.js` me poora user Hash ek saath padhne ke liye. |
 | `HGET key field` | `redis.hget(key, field)` | Hash ka sirf **ek** field ki value return karta hai, poora Hash fetch kiye bina — bade objects ke liye efficient. Field na milne par `null` deta hai. | `json-hash.js` me user Hash ka sirf ek specific field (jaise sirf "name") padhne ke liye. |
+| `LPUSH key value` | `redis.lpush(key, value)` | Redis ki **List** data structure ke LEFT (start) me ek naya item add karta hai. | `email-queue.js` me naya email queue me daalne ke liye. |
+| `LRANGE key start stop` | `redis.lrange(key, 0, -1)` | List ke ek range ke items return karta hai (bina unhe list se remove kiye). `0, -1` ka matlab hai "start se end tak, poori list". | `email-queue.js` me queue me pending saare emails ek saath dekhne (peek) ke liye. |
+| `LLEN key` | `redis.llen(key)` | List me kitne items hain, uska count return karta hai (`O(1)` — bahut fast, poori list fetch nahi karni padti). | `email-queue.js` me queue me kitne emails pending hain, ye batane ke liye. |
+| `RPOP key` | `redis.rpop(key)` | List ke RIGHT (end) se ek item nikal ke return karta hai, **aur usse list se remove bhi kar deta hai**. List empty hone par `null` deta hai. | `email-queue.js` me agla email "process" karne ke liye — `LPUSH` (left se daalna) + `RPOP` (right se nikalna) milke FIFO queue banate hain. |
 
 ## Requirements
 
@@ -131,6 +136,10 @@ server ko khud restart kar deta hai (development ke liye kaam aata hai).
 | POST   | `/user/:id/hash` | User data (body) ko Redis Hash ki tarah store karta hai (`HSET`) — poora object nahi, har field alag se store hota hai. |
 | GET    | `/user/:id/hash` | Hash ke saare fields ek saath fetch karta hai (`HGETALL`). Na milne par `404`. |
 | GET    | `/user/:id/hash/field/:field` | Hash ka sirf ek specific field fetch karta hai (`HGET`), poora object fetch kiye bina. |
+| POST   | `/email-queue/email/send` | Naya email Redis List me queue karta hai (`LPUSH`) — turant nahi bhejta. Body: `{ "to": "...", "subject": "...", "body": "..." }`. |
+| GET    | `/email-queue/email/queue` | Queue me pending saare emails dikhata hai (`LRANGE`), bina unhe hataye. |
+| GET    | `/email-queue/email/queue/count` | Queue me kitne emails pending hain, sirf count batata hai (`LLEN`). |
+| GET    | `/email-queue/email/queue/next` | Queue se agla email nikaal ke (list se remove karke) return karta hai (`RPOP`) — FIFO order (jo pehle aaya, wahi pehle). |
 
 ### Banner test karne ke liye (example commands)
 
@@ -194,6 +203,30 @@ curl http://localhost:8000/user/1/hash/field/name
 > (Redis Hash ki values hamesha string hoti hain), jबकि JSON approach me
 > wo number `25` hi rehti hai — dono approach ke beech ye ek important
 > practical difference hai.
+
+### Email Queue test karne ke liye (example commands)
+
+```bash
+# Email queue me daalo
+curl -X POST http://localhost:8000/email-queue/email/send \
+  -H "Content-Type: application/json" \
+  -d '{"to":"someone@example.com","subject":"Welcome","body":"Hi there!"}'
+
+# Queue me pending saare emails dekho
+curl http://localhost:8000/email-queue/email/queue
+
+# Kitne emails pending hain, count dekho
+curl http://localhost:8000/email-queue/email/queue/count
+
+# Agla email "process" karo (queue se remove ho jayega)
+curl http://localhost:8000/email-queue/email/queue/next
+```
+
+> Note: `GET /email-queue/email/queue/next` internally data ko **delete**
+> karta hai (`RPOP`) — HTTP standard ke hisaab se `GET` request "safe"
+> honi chahiye (sirf read kare, state change na kare). Ye learning ke liye
+> simple rakha gaya hai; production me isko `POST`/`DELETE` method rakhna
+> better practice hoga.
 
 ## OTP Verification System — Deep Dive
 
@@ -484,4 +517,30 @@ waqt follow/fix kiye gaye, taaki baad me revise karte waqt yaad rahe.
       preserve rehta hai.
     - `index.js` me mounting ke upar bhi comment add kiya, aur Redis
       Commands Reference table me `HSET`/`HGETALL`/`HGET` add kiye.
+
+14. **Email Queue demo add kiya (`setup/email-queue.js`)** — Redis List ko
+    ek simple background-job-style queue ki tarah use karne ka pattern:
+    - `POST /email-queue/email/send` — email ko turant SMTP se bhejne ke
+      bajaye `LPUSH` se list me queue kar deta hai (fast response, decoupled
+      processing).
+    - `GET /email-queue/email/queue` — `LRANGE` se poori queue peek karta
+      hai (bina kuch remove kiye).
+    - `GET /email-queue/email/queue/count` — `LLEN` se sirf count (O(1),
+      fast).
+    - `GET /email-queue/email/queue/next` — `RPOP` se agla email nikaalta
+      hai. `LPUSH` (left se andar) + `RPOP` (right se bahar) milke FIFO
+      order banate hain — jo email sabse pehle aaya, wahi sabse pehle
+      process hota hai.
+    - **2 improvements kiye:** (1) Redis key `'emailQueue'` (camelCase) ko
+      `EMAIL_QUEUE_KEY` constant me nikala aur project ke naming convention
+      (`namespace:entity`, jaise `site:banner`) ke hisaab se
+      `'email:queue'` (colon-separated lowercase) kiya. (2) Poori file me
+      `json-hash.js` jaisa hi detailed comment style add kiya — including
+      ek important caveat ki `GET /email-queue/email/queue/next` HTTP
+      standard todta hai kyunki GET request se data delete ho raha hai
+      (production me POST/DELETE hona chahiye, yahan learning ke liye
+      simple rakha).
+    - `index.js` me mounting update kiya, aur Redis Commands Reference
+      table me `LPUSH`/`LRANGE`/`LLEN`/`RPOP` add kiye. Manual testing se
+      confirm kiya ki FIFO order sahi kaam kar raha hai.
 # redis-with-nodejs
