@@ -10,7 +10,7 @@
 //
 // Redis is use case ke liye perfect hai kyunki:
 //   - OTP sirf thodi der ke liye valid rehna chahiye -> Redis ki built-in
-//     "expiry" (TTL) feature isके liye bani hi hai.
+//     "expiry" (TTL) feature iske liye bani hi hai.
 //   - Expire hote hi Redis khud hi key delete kar deta hai, humein manually
 //     "purana OTP saaf karo" wala cron/cleanup job nahi likhna padta.
 //

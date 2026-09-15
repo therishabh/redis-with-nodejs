@@ -14,7 +14,8 @@ Ye ek learning project hai jisme hum seekh rahe hain ki **Redis** aur
 └── setup/
     ├── index.js         # Express server ka entry point
     ├── site-banner.js   # "/banner" routes ka logic (Express Router)
-    └── otp.js           # "/otp" routes ka logic (Express Router)
+    ├── otp.js           # "/otp" routes ka logic (Express Router)
+    └── json-hash.js     # "/user/:id/json" aur "/user/:id/hash" routes (Express Router)
 ```
 
 ## Redis Commands Reference
@@ -43,6 +44,9 @@ rahe hain, unka kaam, aur ye project me kis liye use ho rahe hain.
 | `TTL key` | `redis.ttl(key)` | Batata hai ki ek key (jiski expiry set hai) abhi kitne seconds aur zinda rahegi. `-1` = key hai par expiry nahi hai, `-2` = key exist hi nahi karti. | `otp.js` me `GET /otp/:phone/ttl` route me OTP ka baaki bacha time dikhane ke liye, aur resend-cooldown ke time user ko batane ke liye ki kitni der baad dobara try kare. |
 | `INCR key` | `redis.incr(key)` | Ek key ki numeric value ko `1` se badhata hai. Agar key exist nahi karti, to use `0` maan ke seedha `1` bana deta hai (naya bana deta hai). | `otp.js` me galat OTP verify attempts count karne ke liye (`otp:attempts:<phone>` key). |
 | `EXPIRE key seconds` | `redis.expire(key, seconds)` | Ek already-existing key par expiry (TTL) laga deta hai, itne seconds baad wo apne aap delete ho jayegi. | `otp.js` me attempts counter key par — pehli baar galat attempt hone par isko OTP jitni hi expiry de dete hain, taaki OTP expire hote hi attempts count bhi apne aap saaf ho jaye. |
+| `HSET key field value ...` | `redis.hset(key, object)` | Redis ke native **Hash** data structure me ek key ke andar multiple field-value pairs store karta hai (jaise ek mini object). ioredis me seedha ek JS object pass kar sakte ho, wo apne aap fields bana deta hai. | `json-hash.js` me user data ko Hash ki tarah store karne ke liye — JSON string ka alternative. |
+| `HGETALL key` | `redis.hgetall(key)` | Hash ke saare fields+values ek object ki tarah return karta hai. Key na milne par `null` nahi, **empty object** `{}` deta hai. | `json-hash.js` me poora user Hash ek saath padhne ke liye. |
+| `HGET key field` | `redis.hget(key, field)` | Hash ka sirf **ek** field ki value return karta hai, poora Hash fetch kiye bina — bade objects ke liye efficient. Field na milne par `null` deta hai. | `json-hash.js` me user Hash ka sirf ek specific field (jaise sirf "name") padhne ke liye. |
 
 ## Requirements
 
@@ -122,6 +126,11 @@ server ko khud restart kar deta hai (development ke liye kaam aata hai).
 | POST   | `/otp`           | Diye gaye phone number ke liye naya OTP generate karta hai aur Redis me `60 second` ki expiry ke saath store karta hai. Body: `{ "phone": "..." }`. Agar us phone ke liye pehle se OTP active hai, `429` (cooldown) return hota hai. |
 | POST   | `/otp/verify`    | User ka diya hua OTP, Redis me stored value se match karke verify karta hai. Sahi hone par OTP turant delete ho jata hai (ek baar hi use ho sakta hai). Galat hone par attempts count hota hai; `5` galat attempts ke baad OTP invalidate ho jata hai (`429`). Body: `{ "phone": "...", "otp": "..." }`. |
 | GET    | `/otp/:phone/ttl`| Diye gaye phone number ke current OTP ka TTL (baaki bacha hua time, seconds me) batata hai. |
+| POST   | `/user/:id/json` | User data (body) ko Redis me ek JSON string ki tarah store karta hai (`SET`). |
+| GET    | `/user/:id/json` | Poora JSON string fetch karke parse karta hai aur wapas object bhejta hai. Na milne par `404`. |
+| POST   | `/user/:id/hash` | User data (body) ko Redis Hash ki tarah store karta hai (`HSET`) — poora object nahi, har field alag se store hota hai. |
+| GET    | `/user/:id/hash` | Hash ke saare fields ek saath fetch karta hai (`HGETALL`). Na milne par `404`. |
+| GET    | `/user/:id/hash/field/:field` | Hash ka sirf ek specific field fetch karta hai (`HGET`), poora object fetch kiye bina. |
 
 ### Banner test karne ke liye (example commands)
 
@@ -161,6 +170,30 @@ curl http://localhost:8000/otp/9876543210/ttl
 > Note: Abhi real SMS gateway (Twilio/MSG91 jaisa) integrate nahi kiya hai —
 > OTP sirf server ke console log me print hota hai, taaki learning/testing
 > aasan rahe.
+
+### JSON vs Hash test karne ke liye (example commands)
+
+```bash
+# JSON approach — poora object ek string ki tarah store/fetch hota hai
+curl -X POST http://localhost:8000/user/1/json \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul","age":25}'
+curl http://localhost:8000/user/1/json
+
+# Hash approach — object ke fields alag-alag store hote hain
+curl -X POST http://localhost:8000/user/1/hash \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul","age":25}'
+curl http://localhost:8000/user/1/hash
+
+# Hash ka sirf ek field fetch karo (poora object fetch kiye bina)
+curl http://localhost:8000/user/1/hash/field/name
+```
+
+> Note: Hash me store karne ke baad `age` field string `"25"` ban jayegi
+> (Redis Hash ki values hamesha string hoti hain), jबकि JSON approach me
+> wo number `25` hi rehti hai — dono approach ke beech ye ek important
+> practical difference hai.
 
 ## OTP Verification System — Deep Dive
 
@@ -429,4 +462,26 @@ waqt follow/fix kiye gaye, taaki baad me revise karte waqt yaad rahe.
       karne par cooldown message aaya, 5 galat OTP submit karne par lockout
       hua, aur `+91` prefix wale number se bheja OTP plain 10-digit number
       se hi verify ho gaya.
+
+13. **JSON vs Hash storage demo add kiya (`setup/json-hash.js`)** — Redis
+    me object data store karne ke do tareeke dikhane ke liye 5 routes:
+    - `POST/GET /user/:id/json` — object ko `JSON.stringify()` karke
+      `SET`/`GET` se ek single string value ki tarah store/fetch karta
+      hai.
+    - `POST /user/:id/hash` — object ko `HSET` se Redis ke native Hash
+      structure me store karta hai (ioredis object seedha field-value
+      pairs me convert kar deta hai).
+    - `GET /user/:id/hash` — `HGETALL` se poora Hash fetch karta hai
+      (empty object `{}` milta hai agar hash exist nahi karta — `null`
+      nahi, isliye "not found" check `Object.keys(...).length === 0` se
+      karna padta hai).
+    - `GET /user/:id/hash/field/:field` — `HGET` se Hash ka sirf ek field
+      fetch karta hai, poora object touch kiye bina — bade objects ke liye
+      ye Hash approach ka sabse bada fayda hai.
+    - File ke top par ek detailed comparison likha (kab JSON use karo, kab
+      Hash), aur test karke confirm kiya ki Hash me numbers bhi string ban
+      jaate hain (`age: 25` -> `age: "25"`), jबकि JSON me original type
+      preserve rehta hai.
+    - `index.js` me mounting ke upar bhi comment add kiya, aur Redis
+      Commands Reference table me `HSET`/`HGETALL`/`HGET` add kiye.
 # redis-with-nodejs

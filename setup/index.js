@@ -16,6 +16,7 @@ import Redis from 'ioredis';
 import mongoose from 'mongoose';
 import siteBannerRouter from './site-banner.js';
 import otpRouter from './otp.js';
+import { jsonHashRouter } from './json-hash.js';
 
 // Server kis port par chalega. Agar ".env" ya system me PORT set hai to wahi
 // use hoga, warna default 8000.
@@ -118,6 +119,22 @@ app.use(siteBannerRouter(redis));
 // (In sab routes ka actual implementation "otp.js" me hai.)
 // ---------------------------------------------------------------------------
 app.use(otpRouter(redis));
+
+// ---------------------------------------------------------------------------
+// JSON vs Hash Storage API's
+// "json-hash.js" me Redis ke andar object data store karne ke 2 alag
+// tareeke demonstrate kiye gaye hain — poora object ek JSON string ki
+// tarah (SET/GET) vs Redis ke native Hash structure me (HSET/HGET/
+// HGETALL). Konsa kab use karna chahiye, iska explanation us file ke
+// top comment me hai.
+// Is function se ye routes mount hote hain:
+//   POST /user/:id/json              -> object ko JSON string ki tarah store karo
+//   GET  /user/:id/json              -> poora object JSON se parse karke lao
+//   POST /user/:id/hash              -> object ko Redis Hash ki tarah store karo
+//   GET  /user/:id/hash              -> Hash ke saare fields lao
+//   GET  /user/:id/hash/field/:field -> Hash ka sirf ek field lao
+// ---------------------------------------------------------------------------
+app.use(jsonHashRouter(redis));
 
 // Server ko actually start karte hain, given port par sunna (listen) shuru
 // kar deta hai. Callback function tabhi chalta hai jab server successfully
